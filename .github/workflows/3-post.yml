@@ -1,0 +1,121 @@
+# TỰ SINH bằng tools/public_runner/make_public.py từ .github/workflows/3-post.yml của kho private. Đừng sửa tay: sửa file gốc rồi sinh lại.
+# Chạy ở kho public (miễn phí), đọc/ghi dữ liệu ở kho private bằng secret PRIVATE_REPO_TOKEN.
+name: 3 - Dang video
+run-name: ${{ inputs.dry_run != '' && 'Kiem tra ket noi' || format('Dang video {0}', inputs.batch) }}
+
+# Chạy khi người dùng bấm "Đăng" trong Xoài Studio. Đăng lên từng kênh bật trong channels.json
+# (quản lý ở trang Quản trị). Mỗi kênh đọc mã truy cập từ secret riêng (token_secret).
+on:
+  workflow_dispatch:
+    inputs:
+      batch:
+        description: "Mã video (vd b003)"
+        required: true
+      channels:
+        description: "Mã các kênh cách nhau dấu phẩy (bỏ trống = mọi kênh đang bật)"
+        required: false
+        default: ""
+      reel_mode:
+        description: "Bỏ trống"
+        required: false
+        default: ""
+      dry_run:
+        description: "1 = chỉ kiểm tra kết nối từng kênh, không đăng"
+        required: false
+        default: ""
+      by:
+        description: "Người bấm đăng (tên đăng nhập|tên hiển thị) — Xoài Studio tự điền"
+        required: false
+        default: ""
+      retry_aux:
+        description: "1 = chỉ làm tiếp bình luận, Feed, Story còn thiếu; không đăng lại Reel"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+  id-token: write   # để máy xin quyền TikTok từ Xoài Studio (không cần lưu mã TikTok trong GitHub)
+
+concurrency:
+  group: ${{ inputs.dry_run != '' && 'conn-check' || 'repo-write' }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: phatnh91/fashion-affiliate-reels
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+      - id: m
+        env:
+          IN_CH: ${{ inputs.channels }}
+          DRY: ${{ inputs.dry_run }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          cfg = json.load(open("channels.json", encoding="utf-8"))
+          want = [x.strip() for x in os.environ.get("IN_CH", "").split(",") if x.strip()]
+          chans = [c for c in cfg["channels"] if (c.get("enabled") or os.environ.get("DRY")) and (not want or c["id"] in want)]  # kiểm tra kết nối: cả kênh đang tắt
+          if not chans:
+              print("::error::Không có kênh nào được chọn hoặc đang bật. Vào trang Quản trị để bật kênh.")
+              raise SystemExit(1)
+          for c in chans:
+              c.setdefault("page_id_secret", "NONE"); c["page_id_secret"] = c["page_id_secret"] or "NONE"
+              c.setdefault("token_secret", "NONE"); c["token_secret"] = c["token_secret"] or "NONE"
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write("matrix=" + json.dumps(chans, ensure_ascii=False) + "\n")
+          print("Kênh:", ", ".join(c["name"] for c in chans))
+          PY
+
+  post:
+    needs: plan
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    name: ${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: phatnh91/fashion-affiliate-reels
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+      - name: Cập nhật dữ liệu từ kênh trước
+        if: inputs.dry_run == ''
+        run: git pull --ff-only origin "${GITHUB_REF_NAME}"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install requests
+      - name: Đăng
+        env:
+          CHANNEL_JSON: ${{ toJSON(matrix) }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          TARGET_REPO: phatnh91/fashion-affiliate-reels
+          TOKEN: ${{ secrets[matrix.token_secret] }}
+          PAGE_ID: ${{ secrets[matrix.page_id_secret] }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          REEL_MODE: ${{ inputs.reel_mode }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          RETRY_AUX: ${{ inputs.retry_aux }}
+          POSTED_BY: ${{ inputs.by }}
+          XOAI_URL: https://xoai-store.vercel.app
+        run: python src/post.py --batch "${{ inputs.batch }}"
+      - name: Lưu trạng thái
+        if: always() && inputs.dry_run == ''
+        run: |
+          git config user.name "fashion-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add state
+          git diff --cached --quiet && exit 0
+          git commit -m "Đã đăng ${{ inputs.batch }} lên ${{ matrix.id }} [skip ci]"
+          for i in 1 2 3 4 5; do git pull --rebase && git push && exit 0; sleep $((i*5)); done
+          exit 1

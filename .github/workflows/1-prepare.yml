@@ -1,0 +1,93 @@
+# TỰ SINH bằng tools/public_runner/make_public.py từ .github/workflows/1-prepare.yml của kho private. Đừng sửa tay: sửa file gốc rồi sinh lại.
+# Chạy ở kho public (miễn phí), đọc/ghi dữ liệu ở kho private bằng secret PRIVATE_REPO_TOKEN.
+name: 1 - Chuan bi san pham
+
+# Chạy tay: Actions → "1 - Chuan bi san pham" → Run workflow
+on:
+  workflow_dispatch:
+    inputs:
+      make_character:
+        description: "Tạo bộ ảnh nhân vật (chỉ lần đầu, hoặc để tạo lại)"
+        type: boolean
+        default: false
+      batch:
+        description: "Mã batch (bỏ trống = batch mới đầu tiên trong queue.csv)"
+        required: false
+      redo:
+        description: "Làm lại ảnh mặc thử cho các sản phẩm, vd: p02,p03"
+        required: false
+      redo_end:
+        description: "Chỉ làm lại ảnh tư thế cuối (giữ ảnh mặc thử), vd: p02,p03"
+        required: false
+      tryon_mode:
+        description: "api = Gemini API tự tạo ảnh mặc thử (trang web dùng), manual = làm tay trong app Gemini"
+        required: false
+        default: "manual"
+      by:
+        description: "Người tạo video (tên đăng nhập|tên hiển thị) — Xoài Studio tự điền"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: repo-write
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: phatnh91/fashion-affiliate-reels
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+
+      - name: Tạo nhân vật
+        if: ${{ inputs.make_character }}
+        env:
+          XOAI_AI_PROXY_URL: ${{ vars.XOAI_AI_PROXY_URL }}
+          XOAI_WORKFLOW_TOKEN: ${{ github.token }}
+          TARGET_REPO: phatnh91/fashion-affiliate-reels
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          VERTEX_API_KEY: ${{ secrets.VERTEX_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: python src/character.py --force
+
+      - name: Chuẩn bị batch
+        if: ${{ !inputs.make_character }}
+        env:
+          XOAI_AI_PROXY_URL: ${{ vars.XOAI_AI_PROXY_URL }}
+          XOAI_WORKFLOW_TOKEN: ${{ github.token }}
+          TARGET_REPO: phatnh91/fashion-affiliate-reels
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          VERTEX_API_KEY: ${{ secrets.VERTEX_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          TRYON_MODE: ${{ inputs.tryon_mode }}
+          CREATED_BY: ${{ inputs.by }}
+        run: |
+          ARGS=""
+          [ -n "${{ inputs.batch }}" ] && ARGS="$ARGS --batch ${{ inputs.batch }}"
+          [ -n "${{ inputs.redo }}" ] && ARGS="$ARGS --redo ${{ inputs.redo }}"
+          [ -n "${{ inputs.redo_end }}" ] && ARGS="$ARGS --redo-end ${{ inputs.redo_end }}"
+          python src/prepare.py $ARGS
+
+      - name: Lưu kết quả vào repo
+        run: |
+          git config user.name "fashion-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add character products output state
+          git diff --cached --quiet || git commit -m "Chuẩn bị sản phẩm [skip ci]"
+          git pull --rebase && git push

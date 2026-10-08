@@ -1,0 +1,100 @@
+# TỰ SINH bằng tools/public_runner/make_public.py từ .github/workflows/2-build.yml của kho private. Đừng sửa tay: sửa file gốc rồi sinh lại.
+# Chạy ở kho public (miễn phí), đọc/ghi dữ liệu ở kho private bằng secret PRIVATE_REPO_TOKEN.
+name: 2 - Dung video
+run-name: Build video ${{ inputs.batch || 'all batches' }} (${{ inputs.request_id || github.run_id }})
+
+# Chạy khi app bấm Dựng video (kho public không tự chạy theo push clip).
+on:
+  workflow_dispatch:
+    inputs:
+      batch:
+        description: "Mã batch (bỏ trống = mọi batch đã đủ clip)"
+        required: false
+      request_id:
+        description: "App request identifier for tracking this build"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: repo-write
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:  # chỉ lấy file cần để dựng video (bỏ app/, docs/, tests/ và ảnh mặc thử/garment/endpose: tải nhanh hơn)
+          repository: phatnh91/fashion-affiliate-reels
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          sparse-checkout: |
+            /*
+            !/app/
+            !/docs/
+            !/tests/
+            !/products/*/garment.*
+            !/products/*/tryon.*
+            !/products/*/endpose.*
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      # Runner ubuntu-latest KHÔNG có sẵn ffmpeg; apt-get install kéo ~150 gói từ mirror Azure, có hôm kẹt cả chục phút.
+      # Dùng bản ffmpeg tĩnh (có cả ffprobe) tải từ GitHub rồi cache lại: lần sau lấy từ cache trong vài giây.
+      # Tải lỗi thì mới quay về apt như cũ.
+      - name: Cache ffmpeg
+        id: ffcache
+        uses: actions/cache@v4
+        with:
+          path: ~/ffmpeg-static
+          key: ffmpeg-btbn-linux64-gpl-v1
+      - name: Cài ffmpeg
+        run: |
+          if ! command -v ffmpeg >/dev/null || ! command -v ffprobe >/dev/null; then
+            if [ ! -x "$HOME/ffmpeg-static/ffmpeg" ] || [ ! -x "$HOME/ffmpeg-static/ffprobe" ]; then
+              mkdir -p "$HOME/ffmpeg-static"
+              curl -fsSL --retry 3 --max-time 240 "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz" \
+                | tar -xJ --strip-components=2 -C "$HOME/ffmpeg-static" --wildcards '*/bin/ffmpeg' '*/bin/ffprobe' || echo "Không tải được ffmpeg tĩnh"
+            fi
+            if [ -x "$HOME/ffmpeg-static/ffmpeg" ] && [ -x "$HOME/ffmpeg-static/ffprobe" ]; then
+              echo "$HOME/ffmpeg-static" >> "$GITHUB_PATH"
+            else
+              sudo apt-get update && sudo apt-get install -y ffmpeg
+            fi
+          fi
+          export PATH="$HOME/ffmpeg-static:$PATH"
+          ffmpeg -version | head -1
+          ffprobe -version | head -1
+      - run: pip install -r requirements.txt
+
+      - name: Tải font tiếng Việt (nếu chưa có)
+        run: |
+          F=assets/fonts/BeVietnamPro-Bold.ttf
+          mkdir -p assets/fonts
+          [ -f "$F" ] || curl -fsSL -o "$F" https://github.com/google/fonts/raw/main/ofl/bevietnampro/BeVietnamPro-Bold.ttf || echo "Không tải được font, dùng font mặc định"
+
+      - name: Dựng video + gửi xem trước
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}   # đo kích thước người mẫu để các clip đồng đều (rất rẻ)
+          VERTEX_API_KEY: ${{ secrets.VERTEX_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          ARGS=""
+          [ -n "${{ inputs.batch }}" ] && ARGS="--batch ${{ inputs.batch }}"
+          python src/build_video.py $ARGS
+
+      - name: Lưu video vào repo
+        run: |
+          git config user.name "fashion-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A output state
+          [ -d assets/fonts ] && git add -A assets/fonts
+          git diff --cached --quiet || git commit -m "Dựng video [skip ci]"
+          git pull --rebase && git push

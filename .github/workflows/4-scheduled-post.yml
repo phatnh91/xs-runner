@@ -1,0 +1,68 @@
+# TỰ SINH bằng tools/public_runner/make_public.py từ .github/workflows/4-scheduled-post.yml của kho private. Đừng sửa tay: sửa file gốc rồi sinh lại.
+# Chạy ở kho public (miễn phí), đọc/ghi dữ liệu ở kho private bằng secret PRIVATE_REPO_TOKEN.
+name: 4 - Dang theo lich
+
+# Đăng các video đã hẹn giờ trong Xoài Studio. Chỉ chạy 4 lần/ngày đúng khung giờ vàng
+# (11:30, 12:30, 19:30, 20:30 giờ Việt Nam) để tiết kiệm phút chạy miễn phí của GitHub.
+# GitHub có thể chạy trễ vài phút tới khoảng 15 phút so với giờ hẹn.
+on:
+  schedule:
+    - cron: "30 4,5,12,13 * * *"
+  workflow_dispatch:
+    inputs:
+      only:
+        description: "post = chỉ đăng theo lịch, links = chỉ kiểm tra link (bỏ trống = theo giờ)"
+        required: false
+        default: ""
+      dry:
+        description: "1 = chạy thử, không ghi gì"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: repo-write
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: phatnh91/fashion-affiliate-reels
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+      - name: Gửi lệnh đăng cho video tới giờ
+        if: inputs.only != 'links' && inputs.dry == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: python3 src/scheduler.py
+      # Kiểm tra link tiếp thị mỗi ngày một lần (lượt 11:30 sáng giờ Việt Nam), không cần thư viện ngoài
+      - name: Kiểm tra link sản phẩm
+        if: inputs.only == 'links' || github.event_name == 'schedule'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          DRY: ${{ inputs.dry }}
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ] && [ "$(date -u +%H)" != "04" ]; then echo "Chỉ kiểm tra link ở lượt buổi sáng"; exit 0; fi
+          python3 src/linkcheck.py ${DRY:+--dry --debug}
+      - name: Lưu trạng thái
+        if: inputs.dry == ''
+        run: |
+          git config user.name "fashion-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add state
+          git diff --cached --quiet && exit 0
+          git commit -m "Đăng theo lịch [skip ci]"
+          for i in 1 2 3 4 5; do git pull --rebase && git push && exit 0; sleep $((i*5)); done
+          exit 1

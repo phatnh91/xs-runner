@@ -1,0 +1,62 @@
+# TỰ SINH bằng tools/public_runner/make_public.py từ .github/workflows/0-add-product.yml của kho private. Đừng sửa tay: sửa file gốc rồi sinh lại.
+# Chạy ở kho public (miễn phí), đọc/ghi dữ liệu ở kho private bằng secret PRIVATE_REPO_TOKEN.
+name: 0 - Them san pham
+
+# Chạy tay: Actions → "0 - Them san pham" → Run workflow → điền thông tin 1 sản phẩm.
+# Bot tự đặt mã sản phẩm và gom 3 sản phẩm liên tiếp vào một video.
+on:
+  workflow_dispatch:
+    inputs:
+      name:
+        description: "Tên sản phẩm (copy từ Shopee)"
+        required: true
+      price:
+        description: "Giá, vd 289.000đ"
+        required: true
+      affiliate_link:
+        description: "Link tiếp thị liên kết Shopee (https://s.shopee.vn/...)"
+        required: true
+      image_url:
+        description: "Link ảnh sản phẩm (chuột phải ảnh → Sao chép địa chỉ hình ảnh)"
+        required: false
+      theme:
+        description: "Dịp mặc (chỉ cần điền ở sản phẩm đầu tiên của video), vd: Đi tiệc"
+        required: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: repo-write
+  cancel-in-progress: false
+
+jobs:
+  add:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: phatnh91/fashion-affiliate-reels
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install requests
+      - name: Thêm vào queue.csv
+        env:
+          IN_NAME: ${{ inputs.name }}
+          IN_PRICE: ${{ inputs.price }}
+          IN_LINK: ${{ inputs.affiliate_link }}
+          IN_IMAGE: ${{ inputs.image_url }}
+          IN_THEME: ${{ inputs.theme }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: cd src && python add_product.py
+      - name: Lưu
+        run: |
+          git config user.name "fashion-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add queue.csv
+          git commit -m "Thêm sản phẩm [skip ci]"
+          git pull --rebase && git push
