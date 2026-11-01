@@ -84,10 +84,32 @@ jobs:
           [ -n "${{ inputs.redo_end }}" ] && ARGS="$ARGS --redo-end ${{ inputs.redo_end }}"
           python src/prepare.py $ARGS
 
+      - name: Tự tạo clip AI (Gemini Omni, chỉ khi bật biến XOAI_AI_VIDEO=on)
+        if: ${{ !inputs.make_character && vars.XOAI_AI_VIDEO == 'on' }}
+        timeout-minutes: 30
+        continue-on-error: true   # lỗi ở đây không làm mất ảnh mặc thử vừa chuẩn bị; clip nào thiếu thì làm tay trên Flow
+        env:
+          XOAI_AI_VIDEO: ${{ vars.XOAI_AI_VIDEO }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          IN_BATCH: ${{ inputs.batch }}
+        run: |
+          ARGS=""
+          if [ -n "$IN_BATCH" ]; then
+            [[ "$IN_BATCH" =~ ^b[0-9]+$ ]] || { echo "::error::Mã batch không hợp lệ"; exit 1; }
+            ARGS="--batch $IN_BATCH"
+          fi
+          python src/auto_clips.py $ARGS
+
       - name: Lưu kết quả vào repo
         run: |
           git config user.name "fashion-bot"
           git config user.email "actions@users.noreply.github.com"
-          git add character products output state
+          git add character products output state clips
           git diff --cached --quiet || git commit -m "Chuẩn bị sản phẩm [skip ci]"
           git pull --rebase && git push
